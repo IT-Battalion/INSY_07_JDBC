@@ -8,3 +8,13 @@
 /ZeppelinRemoteNotebooks/
 # Editor-based HTTP Client requests
 /httpRequests/
+dbnavigator.xml
+git_toolbox_prj.xml
+vcs.xml
+dataSources.xml
+discord.xml
+gradle.xml
+jarRepositories.xml
+misc.xml
+runConfigurations.xml
+sqldialects.xml
