@@ -1,64 +1,86 @@
-import java.io.*;
-import java.net.InetSocketAddress;
-import java.net.URL;
-import java.util.*;
-
-import org.json.*;
-
-import java.sql.*;
-import java.util.stream.Collectors;
-
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import model.Article;
+import model.Client;
+import model.Order;
+import model.OrderLine;
+import org.hibernate.Session;
+import org.hibernate.SessionFactory;
+import org.hibernate.boot.Metadata;
+import org.hibernate.boot.MetadataSources;
+import org.hibernate.boot.registry.StandardServiceRegistry;
+import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
+import org.json.JSONArray;
+
+import javax.persistence.criteria.CriteriaBuilder;
+import javax.persistence.criteria.CriteriaQuery;
+import javax.persistence.criteria.Root;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 
 /**
  * INSY Webshop Server
  */
 public class Server {
 
+    private static SessionFactory sessionFactory = null;
     /**
      * Port to bind to for HTTP service
      */
-    private int port = 8000;
+    private final int port = 8000;
+
+    public static void main(String[] args) throws Throwable {
+        Server webshop = new Server();
+        webshop.start();
+        System.out.println("Webshop running at http://127.0.0.1:" + webshop.port);
+    }
+
+    /**
+     * Helper method to parse query paramaters
+     */
+    public static Map<String, String> queryToMap(String query) {
+        Map<String, String> result = new HashMap<String, String>();
+        for (String param : query.split("&")) {
+            String[] pair = param.split("=");
+            if (pair.length > 1) {
+                result.put(pair[0], pair[1]);
+            } else {
+                result.put(pair[0], "");
+            }
+        }
+        return result;
+    }
+
+    private static <T> List<T> loadAllData(Class<T> type, Session session) {
+        CriteriaBuilder builder = session.getCriteriaBuilder();
+        CriteriaQuery<T> criteria = builder.createQuery(type);
+        criteria.from(type);
+        return session.createQuery(criteria).getResultList();
+    }
 
     /**
      * Connect to the database
-     *
-     * @throws IOException
      */
-    Connection setupDB() {
-        Properties dbProps = new Properties();
-        try {
-            //Meine schöne überarbeitung ;)
-            URL dbconfig = getClass().getResource("/db.properties");
-            dbProps.load(new FileInputStream(dbconfig.getFile()));
-            //TODO Connect to DB at the url dbProps.getProperty("url")
-            Connection conn = DriverManager.getConnection(dbProps.getProperty("url"), dbProps);
-            //initDatabase(conn);
-            return conn;
-        } catch (Exception throwables) {
-            throwables.printStackTrace();
+    Session setupDB() {
+        if (sessionFactory == null) {
+            StandardServiceRegistry standardServiceRegistry = new StandardServiceRegistryBuilder()
+                    .configure("hibernate.cfg.xml").build();
+            Metadata metadata = new MetadataSources(standardServiceRegistry).getMetadataBuilder().build();
+            sessionFactory = metadata.getSessionFactoryBuilder().build();
         }
-        return null;
-    }
-
-    private void initDatabase(Connection connection) throws SQLException {
-        InputStream in = getClass().getResourceAsStream("/webshop.sql");
-        if (in != null) {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(in));
-            String sql = reader.lines().collect(Collectors.joining());
-            for (String sSql :
-                    sql.split(";")) {
-                connection.prepareStatement(sSql).executeUpdate();
-            }
-        }
+        return sessionFactory.openSession();
     }
 
     /**
      * Startup the Webserver
-     *
-     * @throws IOException
      */
     public void start() throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
@@ -71,13 +93,19 @@ public class Server {
         server.start();
     }
 
-
-    public static void main(String[] args) throws Throwable {
-        Server webshop = new Server();
-        webshop.start();
-        System.out.println("Webshop running at http://127.0.0.1:" + webshop.port);
+    /**
+     * Helper function to send an answer given as a String back to the browser
+     *
+     * @param t        HttpExchange of the request
+     * @param response Answer to send
+     */
+    private void answerRequest(HttpExchange t, String response) throws IOException {
+        byte[] payload = response.getBytes();
+        t.sendResponseHeaders(200, payload.length);
+        OutputStream os = t.getResponseBody();
+        os.write(payload);
+        os.close();
     }
-
 
     /**
      * Handler for listing all articles
@@ -85,23 +113,8 @@ public class Server {
     class ArticlesHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            Connection conn = setupDB();
-
-            JSONArray res = new JSONArray();
-
-            //TODO read all articles and add them to res
-            try {
-                PreparedStatement stmt = conn.prepareStatement("SELECT * FROM articles;");
-                ResultSet rs = stmt.executeQuery();
-                while (rs.next()) {
-                    res.put(new JSONObject("{\"serial\": \"" + rs.getString(1) + "\", \"description\": \"" + rs.getString(2) + "\", \"price\": \"" + rs.getInt(3) + "\", \"amount\": \"" + rs.getInt(4) + "\"}"));
-                }
-                rs.close();
-                stmt.close();
-                conn.close();
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
+            Session ses = setupDB();
+            JSONArray res = new JSONArray(loadAllData(Article.class, ses));
 
             t.getResponseHeaders().set("Content-Type", "application/json");
             answerRequest(t, res.toString());
@@ -115,29 +128,15 @@ public class Server {
     class ClientsHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            Connection conn = setupDB();
+            Session ses = setupDB();
 
-            JSONArray res = new JSONArray();
+            JSONArray res = new JSONArray(loadAllData(Article.class, ses));
 
-            //TODO read all clients and add them to res
-            try {
-                PreparedStatement stmt = conn.prepareStatement("SELECT * FROM clients;");
-                ResultSet rs = stmt.executeQuery();
-                while (rs.next()) {
-                    res.put(new JSONObject("{\"serial\": \"" + rs.getString(1) + "\", \"name\": \"" + rs.getString(2) + "\", \"address\": \"" + rs.getString(3) + "\", \"city\": \"" + rs.getString(4) + "\", \"country\": \"" + rs.getString(5) + "\"}"));
-                }
-                rs.close();
-                stmt.close();
-                conn.close();
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
             t.getResponseHeaders().set("Content-Type", "application/json");
             answerRequest(t, res.toString());
         }
 
     }
-
 
     /**
      * Handler for listing all orders
@@ -145,35 +144,15 @@ public class Server {
     class OrdersHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            Connection conn = setupDB();
+            Session ses = setupDB();
 
-            JSONArray res = new JSONArray();
+            JSONArray res = new JSONArray(loadAllData(Order.class, ses));
 
-            //TODO read all orders and add them to res
-            // Join orders with clients, order lines, and articles
-            // Get the order id, client name, number of lines, and total prize of each order and add them to res
-            try {
-                PreparedStatement stmt = conn.prepareStatement("SELECT orders.id, orders.client_id, orders.created_at, c.name, count(ol), a.price FROM orders LEFT JOIN clients c on c.id = orders.client_id LEFT JOIN order_lines ol on orders.id = ol.order_id LEFT JOIN articles a on a.id = ol.article_id group by orders.id, c.name, a.price;");
-                ResultSet rs = stmt.executeQuery();
-                while (rs.next()) {
-                    res.put(new JSONObject("{" +
-                            "\"id\": \"" + rs.getInt(1) + "\", " +
-                            "\"client_id\": \"" + rs.getInt(2) + "\", " +
-                            "\"created_at\": \"" + rs.getTimestamp(3).toString() + "\", " +
-                            "\"name\": \"" + rs.getString(4) + "\", " +
-                            "\"count\": \"" + rs.getInt(5) + "\", " +
-                            "\"price\": \"" + rs.getInt(6) + "\"" +
-                            "}"));
-                }
-            } catch (SQLException throwables) {
-                throwables.printStackTrace();
-            }
             t.getResponseHeaders().set("Content-Type", "application/json");
             answerRequest(t, res.toString());
 
         }
     }
-
 
     /**
      * Handler class to place an order
@@ -182,68 +161,58 @@ public class Server {
         @Override
         public void handle(HttpExchange t) throws IOException {
 
-            Connection conn = setupDB();
+            Session ses = setupDB();
             Map<String, String> params = queryToMap(t.getRequestURI().getQuery());
 
             int client_id = Integer.parseInt(params.get("client_id"));
 
-            String response = "";
-            int order_id = 1;
+            String response;
             try {
-//TODO Get the next free order id
+                CriteriaBuilder builder = ses.getCriteriaBuilder();
+                CriteriaQuery<Client> criteria = builder.createQuery(Client.class);
+                Root<Client> root = criteria.from(Client.class);
+                criteria.where(builder.equal(root.get("client_id"), client_id));
+                Client client = ses.createQuery(criteria).getSingleResult();
 
-                //TODO Create a new order with this id for client client_id@
-                PreparedStatement stmt = conn.prepareStatement("SELECT id FROM orders WHERE max(id);");
-                ResultSet rs = stmt.executeQuery();
-                if (rs.next()) {
-                    order_id = rs.getInt(1) + 1;
-                    stmt = conn.prepareStatement("INSERT INTO orders (id, client_id) VALUES (?, ?);");
-                    stmt.setInt(1, order_id);
-                    stmt.setInt(2, client_id);
-                }
+                Order order = new Order();
+                order.setClient(client);
+                order.setCreated_at(Timestamp.valueOf(LocalDateTime.now()));
+                order.setOrderLines(new HashSet<>());
 
 
                 for (int i = 1; i <= (params.size() - 1) / 2; ++i) {
                     int article_id = Integer.parseInt(params.get("article_id_" + i));
                     int amount = Integer.parseInt(params.get("amount_" + i));
 
-
-                    //TODO Get the available amount for article article_id
-                    stmt = conn.prepareStatement("SELECT amount FROM articles WHERE id=?;");
-                    stmt.setInt(1, article_id);
-                    rs = stmt.executeQuery();
-                    int available = rs.getInt(1);
-
+                    builder = ses.getCriteriaBuilder();
+                    CriteriaQuery<Article> criteria2 = builder.createQuery(Article.class);
+                    Root<Article> root2 = criteria2.from(Article.class);
+                    criteria2.where(builder.equal(root2.get("id"), article_id));
+                    Article article = ses.createQuery(criteria2).getSingleResult();
+                    int available = article.getAmount();
 
                     if (available < amount)
                         throw new IllegalArgumentException(String.format("Not enough items of article #%d available", article_id));
 
-                    //TODO Decrease the available amount for article article_id by amount
-                    stmt = conn.prepareStatement("UPDATE articles SET amount=? WHERE id=?;");
-                    stmt.setInt(1, available - amount);
-                    stmt.setInt(2, article_id);
-                    stmt.executeUpdate();
+                    article.setAmount(available - amount);
+                    ses.update(article);
 
-                    //TODO Insert new order line
-                    stmt = conn.prepareStatement("SELECT id FROM oder_lines WHERE max(id);");
-                    rs = stmt.executeQuery();
-                    int orderLineID = rs.getInt(1);
-                    stmt = conn.prepareStatement("INSERT INTO order_lines (id, article_id, order_id, amount) VALUES (?, ?, ?, ?);");
-                    stmt.setInt(1, orderLineID);
-                    stmt.setInt(2, article_id);
-                    stmt.setInt(3, order_id);
-                    stmt.setInt(4, amount);
-                    stmt.executeUpdate();
+                    OrderLine orderLine = new OrderLine();
+                    orderLine.setAmount(amount);
+                    orderLine.setArticle(article);
+                    ses.save(orderLine);
+                    order.getOrderLines().add(orderLine);
                 }
 
-                response = String.format("{\"order_id\": %d}", order_id);
-            } catch (IllegalArgumentException | SQLException iae) {
+                ses.save(order);
+                ses.getTransaction().commit();
+                response = String.format("{\"order_id\": %d}", order.getId());
+            } catch (IllegalArgumentException iae) {
                 response = String.format("{\"error\":\"%s\"}", iae.getMessage());
             }
+
             t.getResponseHeaders().set("Content-Type", "application/json");
             answerRequest(t, response);
-
-
         }
     }
 
@@ -262,37 +231,9 @@ public class Server {
                     "<dt>Alle Kunden anzeigen:</dt><dd><a href=\"http://127.0.0.1:" + port + "/clients\">http://127.0.0.1:" + port + "/clients</a></dd>" +
                     "<dt>Bestellung abschicken:</dt><dd><a href=\"http://127.0.0.1:" + port + "/placeOrder?client_id=<client_id>&article_id_1=<article_id_1>&amount_1=<amount_1&article_id_2=<article_id_2>&amount_2=<amount_2>\">http://127.0.0.1:" + port + "/placeOrder?client_id=&lt;client_id>&article_id_1=&lt;article_id_1>&amount_1=&lt;amount_1>&article_id_2=&lt;article_id_2>&amount_2=&lt;amount_2></a></dd>" +
                     "</dl></body></html>";
+
             answerRequest(t, response);
         }
-    }
 
-    /**
-     * Helper function to send an answer given as a String back to the browser
-     *
-     * @param t        HttpExchange of the request
-     * @param response Answer to send
-     */
-    private void answerRequest(HttpExchange t, String response) throws IOException {
-        byte[] payload = response.getBytes();
-        t.sendResponseHeaders(200, payload.length);
-        OutputStream os = t.getResponseBody();
-        os.write(payload);
-        os.close();
-    }
-
-    /**
-     * Helper method to parse query paramaters
-     */
-    public static Map<String, String> queryToMap(String query) {
-        Map<String, String> result = new HashMap<String, String>();
-        for (String param : query.split("&")) {
-            String pair[] = param.split("=");
-            if (pair.length > 1) {
-                result.put(pair[0], pair[1]);
-            } else {
-                result.put(pair[0], "");
-            }
-        }
-        return result;
     }
 }
